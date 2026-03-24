@@ -2,7 +2,7 @@
   "name": "moyu-browser",
   "displayName": "摸鱼浏览器投影 (CDP)",
   "description": "在编辑器区域投影并控制默认浏览器标签页（CDP）",
-  "version": "0.1.40",
+  "version": "0.1.47",
   "publisher": "moyu",
   "engines": {
     "vscode": "^1.85.0"
@@ -54,7 +54,7 @@
         },
         "moyu.cdp.fps": {
           "type": "number",
-          "default": 40,
+          "default": 120,
           "description": "投影刷新率（帧/秒）"
         },
         "moyu.cdp.jpegQuality": {
@@ -97,6 +97,11 @@
           "enum": ["edge", "system", "chrome"],
           "default": "edge",
           "description": "受管启动浏览器优先级：edge（默认）/system/chrome"
+        },
+        "moyu.cdp.clashProxyServer": {
+          "type": "string",
+          "default": "127.0.0.1:7890",
+          "description": "启用 Clash 时使用的代理地址（host:port）"
         }
       }
     }
@@ -105,7 +110,8 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "package": "vsce package"
+    "clean:vsix": "node -e \"const fs=require('fs');const path=require('path');const cwd=process.cwd();for(const f of fs.readdirSync(cwd)){if(/^moyu-browser-.*\\.vsix$/i.test(f)){try{fs.unlinkSync(path.join(cwd,f));}catch{}}}console.log('old vsix cleaned');\"",
+    "package": "npm run clean:vsix && vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.10.0",

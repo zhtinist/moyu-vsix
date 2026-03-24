@@ -19,6 +19,8 @@ let tabOperationBusy = false;
 let newTabBusy = false;
 let silentCloseReason: string | undefined;
 let replacingPanel = false;
+let housekeepingTimer: NodeJS.Timeout | undefined;
+const managedUserDataDirs = new Set<string>();
 let projectionRuntime:
   | {
       host: string;
@@ -29,6 +31,8 @@ let projectionRuntime:
 
 const LAST_PROJECTION_KEY = "moyu.lastProjection";
 const BOOKMARKS_KEY = "moyu.bookmarks";
+const BOOKMARKS_FILE = "bookmarks.json";
+const USE_CLASH_KEY = "moyu.useClash";
 
 interface CdpTarget {
   id: string;
@@ -53,23 +57,106 @@ interface BookmarkItem {
   url: string;
 }
 
+let bookmarkCache: BookmarkItem[] | undefined;
+let useClashProxy = false;
+
 function logLine(level: "INFO" | "WARN" | "ERROR", message: string): void {
   const line = `[${new Date().toISOString()}] [${level}] ${message}`;
   diagnosticOutput?.appendLine(line);
 }
 
+function sanitizeBookmarks(items: BookmarkItem[]): BookmarkItem[] {
+  return items
+    .filter((b) => typeof b?.title === "string" && typeof b?.url === "string")
+    .map((b) => ({ title: b.title.trim() || b.url.trim(), url: b.url.trim() }))
+    .filter((b) => !!b.title && !!b.url);
+}
+
+function getBookmarkFilePath(): string | undefined {
+  const dir = extensionContextRef?.globalStorageUri?.fsPath;
+  if (!dir) {
+    return undefined;
+  }
+  return path.join(dir, BOOKMARKS_FILE);
+}
+
+function loadBookmarksFromDisk(): BookmarkItem[] {
+  const file = getBookmarkFilePath();
+  if (!file) {
+    return [];
+  }
+  try {
+    if (!fs.existsSync(file)) {
+      return [];
+    }
+    const raw = fs.readFileSync(file, "utf8");
+    const parsed = JSON.parse(raw) as BookmarkItem[];
+    return sanitizeBookmarks(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return [];
+  }
+}
+
+function ensureBookmarksLoaded(): BookmarkItem[] {
+  if (bookmarkCache) {
+    return bookmarkCache;
+  }
+  const fromState = sanitizeBookmarks(extensionContextRef?.globalState.get<BookmarkItem[]>(BOOKMARKS_KEY) || []);
+  const fromDisk = loadBookmarksFromDisk();
+  const merged = [...fromState, ...fromDisk];
+  const dedup: BookmarkItem[] = [];
+  const seen = new Set<string>();
+  for (const b of merged) {
+    if (seen.has(b.url)) {
+      continue;
+    }
+    seen.add(b.url);
+    dedup.push(b);
+  }
+  bookmarkCache = dedup.slice(0, 200);
+  return bookmarkCache;
+}
+
 function readBookmarks(): BookmarkItem[] {
-  const raw = extensionContextRef?.globalState.get<BookmarkItem[]>(BOOKMARKS_KEY) || [];
-  return raw.filter((b) => typeof b?.title === "string" && typeof b?.url === "string");
+  return ensureBookmarksLoaded();
 }
 
 async function writeBookmarks(items: BookmarkItem[]): Promise<void> {
-  await extensionContextRef?.globalState.update(BOOKMARKS_KEY, items);
+  const clean = sanitizeBookmarks(items).slice(0, 200);
+  bookmarkCache = clean;
+  await extensionContextRef?.globalState.update(BOOKMARKS_KEY, clean);
+
+  const file = getBookmarkFilePath();
+  if (!file) {
+    return;
+  }
+  try {
+    const dir = path.dirname(file);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(clean, null, 2), "utf8");
+  } catch {
+    logLine("WARN", "收藏写入磁盘失败，仅保存在内存/状态中");
+  }
+}
+
+async function bootstrapBookmarks(): Promise<void> {
+  const merged = ensureBookmarksLoaded();
+  await writeBookmarks(merged);
+}
+
+function loadUseClashState(): void {
+  useClashProxy = extensionContextRef?.globalState.get<boolean>(USE_CLASH_KEY) === true;
+}
+
+async function setUseClashState(enabled: boolean): Promise<void> {
+  useClashProxy = enabled;
+  await extensionContextRef?.globalState.update(USE_CLASH_KEY, enabled);
 }
 
 type CdpPending = {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
+  timer?: NodeJS.Timeout;
 };
 
 class CdpSession {
@@ -122,7 +209,7 @@ class CdpSession {
 
   private captureQuality = 60;
   private fpsToInterval(fps: number): number {
-    return Math.max(16, Math.floor(1000 / Math.max(1, fps)));
+    return Math.max(8, Math.floor(1000 / Math.max(1, fps)));
   }
 
   private bindEvents(): void {
@@ -141,6 +228,9 @@ class CdpSession {
             return;
           }
           this.pending.delete(data.id);
+          if (pending.timer) {
+            clearTimeout(pending.timer);
+          }
           if (data.error) {
             pending.reject(new Error(data.error.message || "CDP 调用失败"));
           } else {
@@ -174,7 +264,11 @@ class CdpSession {
     const id = this.nextId++;
     const payload = JSON.stringify({ id, method, params });
     const p = new Promise<unknown>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`CDP 请求超时: ${method}`));
+      }, 10000);
+      this.pending.set(id, { resolve, reject, timer });
     });
     this.ws.send(payload);
     return p;
@@ -358,6 +452,9 @@ class CdpSession {
       this.streamTimer = undefined;
     }
     for (const [id, pending] of this.pending.entries()) {
+      if (pending.timer) {
+        clearTimeout(pending.timer);
+      }
       pending.reject(new Error(`会话结束: ${id}`));
     }
     this.pending.clear();
@@ -414,6 +511,13 @@ async function syncBookmarks(): Promise<void> {
   await panel.webview.postMessage({ type: "bookmarks", items });
 }
 
+async function syncUseClash(): Promise<void> {
+  if (!panel) {
+    return;
+  }
+  await panel.webview.postMessage({ type: "clashState", enabled: useClashProxy });
+}
+
 async function withTabOperationLock(run: () => Promise<void>): Promise<void> {
   if (tabOperationBusy) {
     return;
@@ -451,6 +555,7 @@ async function cleanupProjectionResources(reason: string): Promise<void> {
     cdpSession.close(reason);
     cdpSession = undefined;
   }
+  await cleanupManagedBrowserProcesses();
 }
 
 async function runBossKey(): Promise<void> {
@@ -618,10 +723,59 @@ function stopMinimizePulse(): void {
   }
 }
 
+function cleanupStaleManagedProfiles(maxAgeHours = 12): void {
+  try {
+    const root = os.tmpdir();
+    const now = Date.now();
+    const maxAgeMs = Math.max(1, maxAgeHours) * 60 * 60 * 1000;
+    const entries = fs.readdirSync(root, { withFileTypes: true });
+    for (const e of entries) {
+      if (!e.isDirectory() || !e.name.startsWith("moyu-cdp-profile-")) {
+        continue;
+      }
+      const p = path.join(root, e.name);
+      let stat: fs.Stats;
+      try {
+        stat = fs.statSync(p);
+      } catch {
+        continue;
+      }
+      if (now - stat.mtimeMs < maxAgeMs) {
+        continue;
+      }
+      try {
+        fs.rmSync(p, { recursive: true, force: true });
+        logLine("INFO", `已清理过期临时配置目录: ${e.name}`);
+      } catch {
+        // Ignore cleanup failure for in-use dirs.
+      }
+    }
+  } catch {
+    // Ignore housekeeping failures.
+  }
+}
+
+function startHousekeeping(): void {
+  stopHousekeeping();
+  // Periodic maintenance to reduce long-running memory/disk pressure.
+  housekeepingTimer = setInterval(() => {
+    cleanupStaleManagedProfiles(12);
+  }, 15 * 60 * 1000);
+  cleanupStaleManagedProfiles(12);
+}
+
+function stopHousekeeping(): void {
+  if (housekeepingTimer) {
+    clearInterval(housekeepingTimer);
+    housekeepingTimer = undefined;
+  }
+}
+
 async function launchManagedBrowserWindowsIfEnabled(
   host: string,
   port: number,
   url: string,
+  useClash: boolean,
   log?: (line: string) => void
 ): Promise<boolean> {
   const enabled = vscode.workspace.getConfiguration("moyu.cdp").get<boolean>("autoLaunchManagedBrowser") !== false;
@@ -663,8 +817,10 @@ async function launchManagedBrowserWindowsIfEnabled(
   const browserExe = candidates[0];
   const profileRoot = path.join(os.tmpdir(), "moyu-cdp-profile-");
   const userDataDir = fs.mkdtempSync(profileRoot);
+  managedUserDataDirs.add(userDataDir);
   const cfg = vscode.workspace.getConfiguration("moyu.cdp");
   const headlessManaged = cfg.get<boolean>("headlessManaged") !== false;
+  const clashProxyServer = (cfg.get<string>("clashProxyServer") || "127.0.0.1:7890").trim();
   const args = [
     `--remote-debugging-port=${port}`,
     "--remote-debugging-address=127.0.0.1",
@@ -676,6 +832,11 @@ async function launchManagedBrowserWindowsIfEnabled(
     "--new-window",
     url,
   ];
+  if (useClash && clashProxyServer) {
+    args.push(`--proxy-server=${clashProxyServer}`);
+    args.push("--proxy-bypass-list=<-loopback>");
+    log?.(`managed browser clash proxy: ${clashProxyServer}`);
+  }
   if (headlessManaged) {
     args.push("--headless=new");
     args.push("--disable-gpu");
@@ -696,6 +857,38 @@ async function launchManagedBrowserWindowsIfEnabled(
   log?.(`managed browser mode: ${headlessManaged ? "headless" : "visible-minimized"}`);
   log?.(`managed browser preference: ${preference}`);
   return true;
+}
+
+async function cleanupManagedBrowserProcesses(): Promise<void> {
+  if (process.platform !== "win32" || managedUserDataDirs.size === 0) {
+    return;
+  }
+  const dirs = [...managedUserDataDirs];
+  for (const dir of dirs) {
+    const escaped = dir.replace(/'/g, "''");
+    const script = [
+      `$ud='${escaped}'`,
+      "$procs=Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {",
+      "  ($_.Name -in @('chrome.exe','msedge.exe')) -and $_.CommandLine -like ('*' + $ud + '*')",
+      "}",
+      "foreach($p in $procs){",
+      "  try { Stop-Process -Id $p.ProcessId -Force -ErrorAction SilentlyContinue } catch {}",
+      "}",
+    ].join("; ");
+    await new Promise<void>((resolve) => {
+      execFile(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", script],
+        () => resolve()
+      );
+    });
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+    managedUserDataDirs.delete(dir);
+  }
 }
 
 async function detectWindowsDefaultBrowserExe(log?: (line: string) => void): Promise<string | undefined> {
@@ -1050,6 +1243,7 @@ function getCdpProjectionHtml(webview: vscode.Webview, pageTitle: string): strin
       <div id="bookmarkPanel" class="bookmark-panel collapsed"></div>
       <div id="settingsPanel" class="settings-panel collapsed">
         <button id="themeFilter" type="button">主题滤镜: 强</button>
+        <button id="clashToggle" type="button">Clash: 关</button>
       </div>
     </div>
     <div id="stage" class="stage" tabindex="0">
@@ -1066,6 +1260,7 @@ function getCdpProjectionHtml(webview: vscode.Webview, pageTitle: string): strin
       const tint = document.getElementById("tint");
       const urlInput = document.getElementById("url");
       const themeFilterBtn = document.getElementById("themeFilter");
+      const clashToggleBtn = document.getElementById("clashToggle");
       const settingsToggleEl = document.getElementById("settingsToggle");
       const settingsPanelEl = document.getElementById("settingsPanel");
       const tabsEl = document.getElementById("tabs");
@@ -1090,6 +1285,9 @@ function getCdpProjectionHtml(webview: vscode.Webview, pageTitle: string): strin
       let lastActiveTabId = "";
       let lastBookmarks = [];
       let themeFilterLevel = 2; // 0 off, 1 soft, 2 strong
+      let clashEnabled = false;
+      let queuedFrame = "";
+      let frameRafPending = false;
 
       function applyResponsiveScale() {
         const w = Math.max(320, window.innerWidth || 320);
@@ -1396,6 +1594,11 @@ function getCdpProjectionHtml(webview: vscode.Webview, pageTitle: string): strin
         themeFilterLevel = (themeFilterLevel + 1) % 3;
         applyThemeFilter();
       });
+      clashToggleBtn.addEventListener("click", function () {
+        clashEnabled = !clashEnabled;
+        clashToggleBtn.textContent = "Clash: " + (clashEnabled ? "开" : "关");
+        vscode.postMessage({ type: "toggleClash", enabled: clashEnabled });
+      });
       applyThemeFilter();
       renderSettings();
       applyResponsiveScale();
@@ -1405,7 +1608,16 @@ function getCdpProjectionHtml(webview: vscode.Webview, pageTitle: string): strin
         const m = event.data;
         if (!m || typeof m !== "object") return;
         if (m.type === "frame" && m.data) {
-          frame.src = "data:image/jpeg;base64," + m.data;
+          queuedFrame = m.data;
+          if (!frameRafPending) {
+            frameRafPending = true;
+            requestAnimationFrame(function () {
+              frameRafPending = false;
+              if (!queuedFrame) return;
+              frame.src = "data:image/jpeg;base64," + queuedFrame;
+              queuedFrame = "";
+            });
+          }
         }
         if (m.type === "setUrl") {
           urlInput.value = m.url || "";
@@ -1426,6 +1638,10 @@ function getCdpProjectionHtml(webview: vscode.Webview, pageTitle: string): strin
         if (m.type === "bookmarks") {
           lastBookmarks = Array.isArray(m.items) ? m.items : [];
           renderBookmarks(lastBookmarks);
+        }
+        if (m.type === "clashState") {
+          clashEnabled = m.enabled === true;
+          clashToggleBtn.textContent = "Clash: " + (clashEnabled ? "开" : "关");
         }
       });
     })();
@@ -1462,6 +1678,7 @@ function revealOrCreateCdpPanel(
     text?: string;
     targetId?: string;
     title?: string;
+    enabled?: boolean;
   }) => void
 ): void {
   const column = vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
@@ -1505,8 +1722,8 @@ async function connectCdpProjection(context: vscode.ExtensionContext): Promise<v
   const cfg = vscode.workspace.getConfiguration("moyu.cdp");
   const host = cfg.get<string>("host") || "127.0.0.1";
   const defaultPort = cfg.get<number>("port") ?? 9222;
-  const fps = cfg.get<number>("fps") ?? 4;
-  const jpegQuality = cfg.get<number>("jpegQuality") ?? 60;
+  const fps = cfg.get<number>("fps") ?? 120;
+  const jpegQuality = cfg.get<number>("jpegQuality") ?? 20;
 
   const inputPort = await vscode.window.showInputBox({
     title: "连接浏览器调试端口",
@@ -1674,6 +1891,22 @@ async function attachProjectionTarget(
   projectionRuntime = { host, port, target };
 
   let lastCursorSampleTs = 0;
+  let latestFrame: string | undefined;
+  let frameFlushTimer: NodeJS.Timeout | undefined;
+  const startFrameFlush = (fps: number) => {
+    const interval = Math.max(8, Math.floor(1000 / Math.max(1, fps)));
+    if (frameFlushTimer) {
+      clearInterval(frameFlushTimer);
+    }
+    frameFlushTimer = setInterval(() => {
+      if (!panel || !latestFrame) {
+        return;
+      }
+      const frame = latestFrame;
+      latestFrame = undefined;
+      void panel.webview.postMessage({ type: "frame", data: frame });
+    }, interval);
+  };
   revealOrCreateCdpPanel(context, target.title || "(无标题)", (msg) => {
     const session = cdpSession;
     if (!session) {
@@ -1875,18 +2108,27 @@ async function attachProjectionTarget(
         newTabBusy = false;
       });
     }
+    if (msg.type === "toggleClash") {
+      void (async () => {
+        const enabled = msg.enabled === true;
+        await setUseClashState(enabled);
+        logLine("INFO", `Clash 代理已${enabled ? "启用" : "关闭"}`);
+        await syncUseClash();
+      })();
+    }
   });
 
   try {
     const cfg = vscode.workspace.getConfiguration("moyu.cdp");
-    const fps = cfg.get<number>("fps") ?? 4;
-    const jpegQuality = cfg.get<number>("jpegQuality") ?? 60;
+    const fps = cfg.get<number>("fps") ?? 120;
+    const jpegQuality = cfg.get<number>("jpegQuality") ?? 20;
+    startFrameFlush(toPositiveInt(fps, 120));
     cdpSession = await CdpSession.connect(
       target.webSocketDebuggerUrl!,
-      toPositiveInt(fps, 4),
-      toPositiveInt(jpegQuality, 60),
+      toPositiveInt(fps, 120),
+      toPositiveInt(jpegQuality, 20),
       (frameData) => {
-        void panel?.webview.postMessage({ type: "frame", data: frameData });
+        latestFrame = frameData;
       },
       (reason) => {
         if (silentCloseReason && reason === silentCloseReason) {
@@ -1900,6 +2142,10 @@ async function attachProjectionTarget(
       }
     );
   } catch {
+    if (frameFlushTimer) {
+      clearInterval(frameFlushTimer);
+      frameFlushTimer = undefined;
+    }
     cdpSession = undefined;
     logLine("ERROR", "连接 CDP 会话失败");
     diagnosticOutput?.show(true);
@@ -1911,8 +2157,18 @@ async function attachProjectionTarget(
   void panel?.webview.postMessage({ type: "setUrl", url: target.url || "" });
   await syncTabList(host, port, target.id);
   await syncBookmarks();
+  await syncUseClash();
   saveLastProjection(host, port, target);
   startAutoFollowNewestTab(context);
+  if (frameFlushTimer) {
+    const sub = panel?.onDidDispose(() => {
+      clearInterval(frameFlushTimer!);
+      frameFlushTimer = undefined;
+    });
+    if (sub) {
+      context.subscriptions.push(sub);
+    }
+  }
 }
 
 async function switchProjectionTab(context: vscode.ExtensionContext): Promise<void> {
@@ -2069,7 +2325,7 @@ async function createAndAttachNewTab(context: vscode.ExtensionContext, preferred
     // Prefer managed-launch first to avoid popping a visible default-browser window.
     try {
       log("managed-launch fallback begin");
-      const launched = await launchManagedBrowserWindowsIfEnabled(rt.host, rt.port, url, log);
+      const launched = await launchManagedBrowserWindowsIfEnabled(rt.host, rt.port, url, useClashProxy, log);
       if (launched) {
         await minimizeBrowserWindowsIfEnabled(log);
         startMinimizePulse(log);
@@ -2155,6 +2411,9 @@ function pushTypography(webview: vscode.Webview): void {
 export function activate(context: vscode.ExtensionContext): void {
   extensionContextRef = context;
   diagnosticOutput = vscode.window.createOutputChannel("moyu-browser");
+  void bootstrapBookmarks();
+  loadUseClashState();
+  startHousekeeping();
   statusItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, -10000);
   statusItem.text = "fish";
   statusItem.tooltip = "fish quick start";
@@ -2186,6 +2445,7 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
+  stopHousekeeping();
   void cleanupProjectionResources("扩展停用");
   panel?.dispose();
   panel = undefined;

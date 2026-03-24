@@ -10,15 +10,17 @@
 - 收藏夹支持：新增、重命名、删除、点击跳转
 - 新标签按钮改为“网址选择模式”：`Bing` + 收藏夹二选一
 - 主题滤镜三档（关/轻/强），放在二级“设置”区域
+- 设置区支持 `Clash` 开关，可在受管启动时走代理
+- 默认目标帧率提升到 `120fps`（受设备与页面复杂度影响）
 - 所有提示/报错统一输出到 `Output: moyu-browser`（不弹通知）
-- `Esc Esc` 老板键：退出投影并清理会话资源
+- `Esc Esc` 老板键：按关闭语义退出并清理相关受管进程
 
 ## 安装（VSIX）
 
 1. 打开扩展视图
 2. 右上角点击 `...`
 3. 选择 `Install from VSIX...`
-4. 选择本目录中的 `moyu-browser-0.1.40.vsix`
+4. 选择本目录中的 `moyu-browser-0.1.47.vsix`
 
 ## 命令
 
@@ -45,6 +47,7 @@
 - **设置**：
   - 点击 `显示设置` 展开二级设置
   - `主题滤镜` 在 `关/轻/强` 之间循环
+  - `Clash` 在 `开/关` 之间切换（受管浏览器模式下生效）
 
 ## 新标签逻辑（已调整）
 
@@ -74,6 +77,7 @@
 - `moyu.cdp.fps`：投影帧率
 - `moyu.cdp.jpegQuality`：投影 JPEG 质量
 - `moyu.cdp.defaultUrl`：默认网址（作为兜底）
+- `moyu.cdp.clashProxyServer`：Clash 代理地址（默认 `127.0.0.1:7890`）
 - `moyu.cdp.minimizeBrowserWindow`：自动最小化浏览器窗口（Windows）
 - `moyu.cdp.autoLaunchManagedBrowser`：接管失败时尝试受管启动浏览器（Windows）
 - `moyu.cdp.headlessManaged`：受管浏览器无窗口模式
@@ -104,11 +108,19 @@ start "" "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote
 
 - CDP 投影是远程控制与画面流，不是系统窗口原生嵌入
 - 网页内容样式由网站决定；扩展只能调整外围 UI 和滤镜
+- Clash 开关主要作用于扩展“受管启动”的浏览器进程；外部已运行浏览器是否走代理取决于其自身设置
+
+## 资源治理
+
+- 后台定时维护：默认每 `15min` 清理一次过期临时 profile 目录
+- CDP 请求超时回收 + 帧背压渲染，降低长时运行内存增长风险
 
 ## 开发与打包
 
 ```bash
 npm install
 npm run compile
-npx @vscode/vsce package
+npm run package
 ```
+
+> `npm run package` 会在打包前自动清理目录里的旧版 `moyu-browser-*.vsix`，仅保留最新包。
