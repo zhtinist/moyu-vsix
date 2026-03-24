@@ -1,0 +1,121 @@
+{
+  "name": "moyu-browser",
+  "displayName": "摸鱼浏览器投影 (CDP)",
+  "description": "在编辑器区域投影并控制默认浏览器标签页（CDP）",
+  "version": "0.1.40",
+  "publisher": "moyu",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:moyu.connectBrowserProjection",
+    "onCommand:moyu.quickStart",
+    "onCommand:moyu.bossKey"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "moyu.connectBrowserProjection",
+        "title": "摸鱼: 连接默认浏览器投影（CDP）"
+      },
+      {
+        "command": "moyu.quickStart",
+        "title": "摸鱼: 一键启动（投影）"
+      },
+      {
+        "command": "moyu.bossKey",
+        "title": "摸鱼: 老板键（立即切回代码）"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "moyu.bossKey",
+        "key": "escape escape",
+        "when": "activeWebviewPanelId == moyu.embeddedBrowser"
+      }
+    ],
+    "configuration": {
+      "title": "摸鱼浏览器",
+      "properties": {
+        "moyu.cdp.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "CDP 调试主机"
+        },
+        "moyu.cdp.port": {
+          "type": "number",
+          "default": 9222,
+          "description": "CDP 调试端口"
+        },
+        "moyu.cdp.fps": {
+          "type": "number",
+          "default": 40,
+          "description": "投影刷新率（帧/秒）"
+        },
+        "moyu.cdp.jpegQuality": {
+          "type": "number",
+          "default": 20,
+          "description": "投影图片质量（20-95）"
+        },
+        "moyu.cdp.quickStartAskRestore": {
+          "type": "boolean",
+          "default": true,
+          "description": "一键启动时是否询问恢复上次页面"
+        },
+        "moyu.cdp.defaultUrl": {
+          "type": "string",
+          "default": "https://www.bing.com",
+          "description": "一键启动新建标签页时使用的默认地址"
+        },
+        "moyu.cdp.minimizeBrowserWindow": {
+          "type": "boolean",
+          "default": true,
+          "description": "在投影连接或外部打开回退时自动最小化浏览器窗口（Windows）"
+        },
+        "moyu.cdp.autoLaunchManagedBrowser": {
+          "type": "boolean",
+          "default": true,
+          "description": "当无法接管默认浏览器时，自动最小化启动受管 Chrome/Edge 并尝试投影"
+        },
+        "moyu.cdp.headlessManaged": {
+          "type": "boolean",
+          "default": true,
+          "description": "受管浏览器使用 headless 模式运行（尽量不弹出可见窗口）"
+        },
+        "moyu.cdp.allowOpenExternalFallback": {
+          "type": "boolean",
+          "default": false,
+          "description": "是否允许最终回退到 openExternal 打开系统浏览器（可能弹出窗口）"
+        },
+        "moyu.cdp.browserPreference": {
+          "type": "string",
+          "enum": ["edge", "system", "chrome"],
+          "default": "edge",
+          "description": "受管启动浏览器优先级：edge（默认）/system/chrome"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/vscode": "^1.85.0",
+    "@vscode/vsce": "^2.22.0",
+    "escape-string-regexp": "^5.0.0",
+    "typescript": "^5.3.3"
+  },
+  "dependencies": {
+    "@types/ws": "^8.18.1",
+    "ws": "^8.20.0"
+  }
+}
