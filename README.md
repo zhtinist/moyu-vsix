@@ -1,25 +1,24 @@
 # 摸鱼浏览器投影（CDP）
 
-在 Cursor、Kiro、VS Code 这类基于 VS Code 的编辑器里，把默认浏览器标签页投影到代码编辑区中操作（CDP）。
+在 Cursor、Kiro、VS Code 等基于 VS Code 的编辑器中，将浏览器页面通过 CDP 投影到编辑区并可直接交互操作。
 
-## 功能
+## 当前版本亮点
 
-- 连接默认浏览器标签页并投影到编辑区（CDP）
-- 自动重连上次标签页（可配置）
-- 地址栏输入/回车跳转，支持刷新
-- 投影工具栏支持：切换标签 / 刷新 / 新标签 / 地址输入跳转
-- 投影质量预设：`低延迟` / `高画质`
-- 主题滤镜：`关/轻/强` 三档，减少投影画面与编辑器配色的割裂感
-- 使用 VS Code 主题变量，界面颜色自动跟随深浅主题
-- 字体读取 `editor.fontFamily`、`editor.fontSize`、`editor.fontWeight`
-- 一键“老板键”：立即关闭浏览器并切回普通代码文件
+- CDP 投影浏览器页面（鼠标、滚轮、键盘可操作）
+- 顶部工具栏精简布局，按钮会随编辑器宽度动态缩放
+- 标签区默认折叠，展开后可切换/关闭/清空标签
+- 收藏夹支持：新增、重命名、删除、点击跳转
+- 新标签按钮改为“网址选择模式”：`Bing` + 收藏夹二选一
+- 主题滤镜三档（关/轻/强），放在二级“设置”区域
+- 所有提示/报错统一输出到 `Output: moyu-browser`（不弹通知）
+- `Esc Esc` 老板键：退出投影并清理会话资源
 
 ## 安装（VSIX）
 
 1. 打开扩展视图
-2. 点击右上角 `...`
+2. 右上角点击 `...`
 3. 选择 `Install from VSIX...`
-4. 选择本目录中的 `vsix`文件
+4. 选择本目录中的 `moyu-browser-0.1.40.vsix`
 
 ## 命令
 
@@ -29,66 +28,87 @@
 
 ## 默认快捷键
 
-- 老板键：`Esc Esc`（双击 Esc，仅在内嵌浏览器面板激活时）
+- `Esc Esc`：老板键（仅在投影面板激活时）
 
-如果和你当前快捷键冲突，请在键盘快捷方式中按 `moyu` 搜索并改绑。
+## 工具栏说明（当前 UI）
 
-## 配置项
+- **导航**：`返回` / `刷新` / `新标签` / 地址栏输入 / `跳转`
+- **标签区**：点击 `已打开 n 个标签页` 展开；支持：
+  - 点击行切换标签
+  - 行内 `×` 关闭单个标签
+  - 顶部 `清空标签`
+- **收藏夹**：
+  - `+` 新增当前页面到收藏（会要求输入名称）
+  - 展开后点击收藏项直接跳转
+  - `✎` 重命名收藏
+  - `×` 删除收藏
+- **设置**：
+  - 点击 `显示设置` 展开二级设置
+  - `主题滤镜` 在 `关/轻/强` 之间循环
+
+## 新标签逻辑（已调整）
+
+点击 `新标签` 后，会弹出选择列表，只允许从以下来源打开：
+
+1. `https://www.bing.com`
+2. 收藏夹中的任一网址
+
+不再直接走旧的“默认 URL 新建”逻辑。
+
+## 输入与兼容性
+
+- 支持中文输入法（IME 组合输入）
+- 常用控制键（回车、退格、方向键等）已做单独处理
+- 回车提交搜索已针对 CDP 键盘事件做兼容字段补全
+
+## 日志与诊断
+
+- 扩展不再弹出提示通知
+- 所有状态、告警、错误写入 `Output: moyu-browser`
+- 失败诊断会自动输出详细日志；必要时会复制诊断文本到剪贴板
+
+## 配置项（仍可用）
 
 - `moyu.cdp.host`：CDP 主机（默认 `127.0.0.1`）
 - `moyu.cdp.port`：CDP 端口（默认 `9222`）
-- `moyu.cdp.fps`：投影帧率（默认 `40`，极速）
-- `moyu.cdp.jpegQuality`：投影画质（默认 `20`，极低延迟）
-- `moyu.cdp.quickStartAskRestore`：一键启动时是否询问“恢复上次页面”（默认 `true`）
-- `moyu.cdp.defaultUrl`：一键启动新建标签页默认地址（默认 `https://www.bing.com`）
-- `moyu.cdp.minimizeBrowserWindow`：自动最小化浏览器窗口（默认 `true`，Windows）
-- `moyu.cdp.autoLaunchManagedBrowser`：接管失败时自动最小化启动受管浏览器并重试投影（默认 `true`，Windows）
-- `moyu.cdp.headlessManaged`：受管浏览器使用无窗口模式（默认 `true`）
-- `moyu.cdp.allowOpenExternalFallback`：允许回退到系统浏览器打开（默认 `false`，避免弹窗）
-- `moyu.cdp.browserPreference`：受管启动浏览器优先级（默认 `edge`，可选 `system` / `chrome`）
+- `moyu.cdp.fps`：投影帧率
+- `moyu.cdp.jpegQuality`：投影 JPEG 质量
+- `moyu.cdp.defaultUrl`：默认网址（作为兜底）
+- `moyu.cdp.minimizeBrowserWindow`：自动最小化浏览器窗口（Windows）
+- `moyu.cdp.autoLaunchManagedBrowser`：接管失败时尝试受管启动浏览器（Windows）
+- `moyu.cdp.headlessManaged`：受管浏览器无窗口模式
+- `moyu.cdp.allowOpenExternalFallback`：允许回退到系统浏览器打开
+- `moyu.cdp.browserPreference`：受管浏览器优先级（`edge` / `system` / `chrome`）
 
-## 使用说明
+## 快速启动说明
 
-### A. 默认浏览器投影（推荐）
+- 右下状态栏有 `fish` 按钮
+- 点击后会直接走“一键启动 + 新建标签投影”
+- 当前流程不再询问“恢复上次页面”
 
-1. 先用远程调试参数启动你的浏览器（建议复用你平时的用户数据目录）
-2. 在扩展执行 `摸鱼: 连接默认浏览器投影（CDP）`
-3. 输入端口（默认 `9222`），选择要投影的标签页
-4. 投影工具栏中可：切换标签、刷新、新标签、地址栏跳转、切换低延迟/高画质、主题滤镜（关/轻/强）
-5. 点击投影画面后，可直接鼠标/滚轮/键盘操作
-6. 若“新标签”失败，会自动写入 `Output: moyu-browser` 详细诊断日志，可一键复制
-7. 默认主题滤镜为“强”
+## 浏览器启动示例（Windows）
 
-### 一键启动入口
-
-- 右下状态栏有 `fish` 按钮（纯文本，无图标）
-- 点击后会：
-  1) 新建并连接一个浏览器标签页  
-  2) 如果存在上次记录，会弹出是否恢复上次页面（可通过配置关闭询问）
-
-Windows 示例（Chrome）：
+Chrome:
 
 ```powershell
 start "" "C:\Program Files\Google\Chrome\Application\chrome.exe" --remote-debugging-port=9222
 ```
 
-Windows 示例（Edge）：
+Edge:
 
 ```powershell
 start "" "C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe" --remote-debugging-port=9222
 ```
 
-> 说明：若你要明确复用某个资料目录，可再追加 `--user-data-dir=...` 参数。
-
 ## 限制说明
 
-- CDP 投影模式：是“远程控制与画面投送”，不是系统窗口句柄硬嵌入；但可复用你浏览器环境，贴近日常使用习惯。
-- 主题同步说明：会同步扩展 UI（工具栏/按钮/字体）到编辑器主题；网页内容本身由网站决定，不能强制改成编辑器主题。
+- CDP 投影是远程控制与画面流，不是系统窗口原生嵌入
+- 网页内容样式由网站决定；扩展只能调整外围 UI 和滤镜
 
 ## 开发与打包
 
 ```bash
 npm install
 npm run compile
-npx @vscode/vsce package --no-dependencies
+npx @vscode/vsce package
 ```
